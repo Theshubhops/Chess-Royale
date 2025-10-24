@@ -27,6 +27,7 @@ async function connectDB() {
 // Game state
 const games = new Map();
 const waitingPlayers = [];
+const rooms = new Map();
 
 io.on('connection', (socket) => {
   console.log('Client connected:', socket.id);
@@ -34,6 +35,14 @@ io.on('connection', (socket) => {
   socket.on('find-match', async ({ userId, username, rating }) => {
     console.log('Player looking for match:', username);
     
+    // If player is already in a room, do not add to waiting list
+    for (const room of rooms.values()) {
+        if (room.players.some(p => p.userId === userId)) {
+            socket.emit('error', { message: 'You are already in a room.' });
+            return;
+        }
+    }
+
     const existingIndex = waitingPlayers.findIndex(p => p.userId === userId);
     if (existingIndex !== -1) {
       waitingPlayers.splice(existingIndex, 1);
@@ -98,6 +107,83 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('create-room', ({ userId, username, rating }) => {
+    const roomId = require('crypto').randomUUID();
+    const room = {
+        roomId,
+        players: [{ userId, username, rating, socketId: socket.id }],
+        gameId: null
+    };
+    rooms.set(roomId, room);
+    socket.join(roomId);
+    socket.emit('room-created', { roomId });
+  });
+
+  socket.on('join-room', async ({ roomId, userId, username, rating }) => {
+    const room = rooms.get(roomId);
+    if (!room) {
+        socket.emit('error', { message: 'Room not found' });
+        return;
+    }
+
+    if (room.players.length >= 2) {
+        socket.emit('error', { message: 'Room is full' });
+        return;
+    }
+
+    if (room.players.some(p => p.userId === userId)) {
+        socket.emit('error', { message: 'You are already in this room' });
+        return;
+    }
+
+    const opponent = room.players[0];
+    const player = { userId, username, rating, socketId: socket.id };
+    room.players.push(player);
+    socket.join(roomId);
+    
+    const gameId = require('crypto').randomUUID();
+    room.gameId = gameId;
+
+    const whitePlayer = Math.random() < 0.5 ? player : opponent;
+    const blackPlayer = whitePlayer.userId === userId ? opponent : player;
+
+    const chess = new Chess();
+    games.set(gameId, {
+      gameId,
+      chess,
+      white: whitePlayer,
+      black: blackPlayer,
+      fen: chess.fen(),
+      pgn: '',
+      status: 'active',
+      currentTurn: 'white',
+      startTime: new Date(),
+      moves: []
+    });
+
+    if (db) {
+      await db.collection('games').insertOne({
+        gameId,
+        whitePlayer: { userId: whitePlayer.userId, username: whitePlayer.username, rating: whitePlayer.rating },
+        blackPlayer: { userId: blackPlayer.userId, username: blackPlayer.username, rating: blackPlayer.rating },
+        fen: chess.fen(),
+        pgn: '',
+        moves: [],
+        status: 'active',
+        result: null,
+        startTime: new Date(),
+        endTime: null
+      });
+    }
+
+    io.to(roomId).emit('match-found', {
+      gameId,
+      color: whitePlayer.userId === userId ? 'white' : 'black',
+      opponent: whitePlayer.userId === userId ? blackPlayer : whitePlayer,
+      fen: chess.fen()
+    });
+  });
+
   socket.on('cancel-match', ({ userId }) => {
     const index = waitingPlayers.findIndex(p => p.userId === userId);
     if (index !== -1) {
@@ -155,7 +241,7 @@ io.on('connection', (socket) => {
               fen: game.fen,
               pgn: game.pgn,
               status: gameStatus,
-              result: winner,
+              result: winner || (gameStatus === 'draw' ? 'draw' : null),
               endTime: gameStatus !== 'active' ? new Date() : null
             },
             $push: { moves: result }
@@ -165,15 +251,31 @@ io.on('connection', (socket) => {
         if (gameStatus !== 'active') {
           const whiteRating = game.white.rating;
           const blackRating = game.black.rating;
-          const resultStr = winner || 'draw';
           
-          // Simple ELO calculation
           const K = 32;
           const expectedWhite = 1 / (1 + Math.pow(10, (blackRating - whiteRating) / 400));
           const expectedBlack = 1 - expectedWhite;
           
-          const actualWhite = winner === 'white' ? 1 : (winner === 'draw' ? 0.5 : 0);
-          const actualBlack = winner === 'black' ? 1 : (winner === 'draw' ? 0.5 : 0);
+          let actualWhite, actualBlack;
+          const whiteInc = { gamesPlayed: 1 };
+          const blackInc = { gamesPlayed: 1 };
+
+          if (gameStatus === 'draw') {
+            actualWhite = 0.5;
+            actualBlack = 0.5;
+            whiteInc.draws = 1;
+            blackInc.draws = 1;
+          } else { // 'checkmate'
+            actualWhite = winner === 'white' ? 1 : 0;
+            actualBlack = winner === 'black' ? 1 : 0;
+            if (winner === 'white') {
+              whiteInc.wins = 1;
+              blackInc.losses = 1;
+            } else {
+              whiteInc.losses = 1;
+              blackInc.wins = 1;
+            }
+          }
           
           const newWhiteRating = Math.round(whiteRating + K * (actualWhite - expectedWhite));
           const newBlackRating = Math.round(blackRating + K * (actualBlack - expectedBlack));
@@ -182,7 +284,7 @@ io.on('connection', (socket) => {
             { userId: game.white.userId },
             {
               $set: { rating: newWhiteRating },
-              $inc: { gamesPlayed: 1, ...(winner === 'white' && { wins: 1 }), ...(winner === 'draw' && { draws: 1 }), ...(winner === 'black' && { losses: 1 }) }
+              $inc: whiteInc
             }
           );
 
@@ -190,7 +292,7 @@ io.on('connection', (socket) => {
             { userId: game.black.userId },
             {
               $set: { rating: newBlackRating },
-              $inc: { gamesPlayed: 1, ...(winner === 'black' && { wins: 1 }), ...(winner === 'draw' && { draws: 1 }), ...(winner === 'white' && { losses: 1 }) }
+              $inc: blackInc
             }
           );
         }
@@ -335,9 +437,19 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     console.log('Client disconnected:', socket.id);
-    const index = waitingPlayers.findIndex(p => p.socketId === socket.id);
+    let index = waitingPlayers.findIndex(p => p.socketId === socket.id);
     if (index !== -1) {
       waitingPlayers.splice(index, 1);
+    }
+    // Also remove from any rooms
+    for (const [roomId, room] of rooms.entries()) {
+        index = room.players.findIndex(p => p.socketId === socket.id);
+        if (index !== -1) {
+            room.players.splice(index, 1);
+            if (room.players.length === 0) {
+                rooms.delete(roomId);
+            }
+        }
     }
   });
 });

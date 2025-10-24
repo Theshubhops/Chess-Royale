@@ -219,11 +219,19 @@ async function handleRoute(request, { params }) {
         return handleCORS(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }));
       }
 
-      const body = await request.json();
-      const { pgn } = body;
+      const { pgn, opponentUsername } = await request.json();
       if (!pgn) {
-        return handleCORS(NextResponse.json({ error: 'PGN required' }, { status: 400 }));
+        return handleCORS(NextResponse.json({ error: 'PGN string is required' }, { status: 400 }));
       }
+
+      let opponent = null;
+      if (opponentUsername) {
+        opponent = await db.collection('users').findOne({ username: opponentUsername });
+      }
+
+      const blackPlayer = opponent ? 
+        { userId: opponent.userId, username: opponent.username, rating: opponent.rating } :
+        { userId: 'imported', username: 'Imported Game', rating: 0 };
 
       try {
         const chess = new Chess();
@@ -233,8 +241,8 @@ async function handleRoute(request, { params }) {
 
         await db.collection('games').insertOne({
           gameId,
-          whitePlayer: { userId: user.userId, username: user.username, rating: 0 },
-          blackPlayer: { userId: 'imported', username: 'Imported Game', rating: 0 },
+          whitePlayer: { userId: user.userId, username: user.username, rating: user.rating || 0 },
+          blackPlayer,
           fen: chess.fen(),
           pgn: chess.pgn(),
           moves: chess.history({ verbose: true }),
@@ -247,7 +255,7 @@ async function handleRoute(request, { params }) {
 
         return handleCORS(NextResponse.json({ success: true, gameId }));
       } catch (error) {
-        return handleCORS(NextResponse.json({ error: 'Invalid PGN' }, { status: 400 }));
+        return handleCORS(NextResponse.json({ error: 'Invalid PGN format' }, { status: 400 }));
       }
     }
 

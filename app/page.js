@@ -10,6 +10,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Trophy, Users, Swords, Crown, TrendingUp } from 'lucide-react';
 import { toast } from 'sonner';
 import { io } from 'socket.io-client';
+import RoomLobby from '@/components/RoomLobby';
+import OfflineBoard from '@/components/OfflineBoard';
 
 function HomePage() {
   const { user, loading, login, register, logout } = useAuth();
@@ -38,6 +40,20 @@ function HomePage() {
         toast.success(`Match found! You're playing as ${data.color}`);
         setSearching(false);
         router.push(`/game/${data.gameId}?color=${data.color}`);
+      });
+
+      newSocket.on('room-created', ({ roomId }) => {
+        toast.success(`Room created: ${roomId}`);
+        router.push(`/game/${roomId}`);
+      });
+
+      newSocket.on('room-joined', ({ roomId }) => {
+        toast.success(`Joined room: ${roomId}`);
+        router.push(`/game/${roomId}`);
+      });
+
+      newSocket.on('error', ({ message }) => {
+        toast.error(message);
       });
 
       return () => {
@@ -80,6 +96,18 @@ function HomePage() {
       socket.emit('cancel-match', { userId: user.userId });
     }
     setSearching(false);
+  };
+
+  const handleCreateRoom = () => {
+    if (socket) {
+      socket.emit('create-room', { userId: user.userId, username: user.username, rating: user.rating });
+    }
+  };
+
+  const handleJoinRoom = (roomId) => {
+    if (socket && roomId) {
+      socket.emit('join-room', { roomId, userId: user.userId, username: user.username, rating: user.rating });
+    }
   };
 
   if (loading) {
@@ -197,43 +225,74 @@ function HomePage() {
 
       <main className="relative z-10 container mx-auto px-4 py-12">
         <div className="max-w-4xl mx-auto space-y-8">
-          <Card className="border-slate-800 bg-slate-900/80 backdrop-blur-sm overflow-hidden">
-            <div className="absolute inset-0 bg-gradient-to-r from-amber-500/10 to-purple-500/10" />
-            <CardHeader className="relative z-10 text-center pb-4">
-              <CardTitle className="text-4xl font-bold text-white mb-2">
-                Ready for Battle?
-              </CardTitle>
-              <CardDescription className="text-slate-400 text-lg">
-                Find an opponent and prove your chess mastery
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="relative z-10 flex flex-col items-center pb-8">
-              {!searching ? (
-                <Button
-                  size="lg"
-                  onClick={handleFindMatch}
-                  className="bg-gradient-to-r from-amber-600 to-amber-500 hover:from-amber-700 hover:to-amber-600 text-white font-bold px-12 py-6 text-xl shadow-lg shadow-amber-500/30"
-                >
-                  <Swords className="mr-3 h-6 w-6" />
-                  Find Match
-                </Button>
-              ) : (
-                <div className="text-center space-y-4">
-                  <div className="flex items-center justify-center gap-3 text-white">
-                    <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-amber-500" />
-                    <span className="text-lg">Searching for opponent...</span>
-                  </div>
-                  <Button
-                    variant="outline"
-                    onClick={handleCancelSearch}
-                    className="border-slate-700"
-                  >
-                    Cancel Search
-                  </Button>
-                </div>
-              )}
-            </CardContent>
-          </Card>
+          <Tabs defaultValue="random" className="w-full">
+            <TabsList className="grid w-full grid-cols-3">
+              <TabsTrigger value="random">Random Match</TabsTrigger>
+              <TabsTrigger value="room">Room Lobby</TabsTrigger>
+              <TabsTrigger value="offline">Offline Game</TabsTrigger>
+            </TabsList>
+            <TabsContent value="random">
+              <Card className="border-slate-800 bg-slate-900/80 backdrop-blur-sm overflow-hidden">
+                <div className="absolute inset-0 bg-gradient-to-r from-amber-500/10 to-purple-500/10" />
+                <CardHeader className="relative z-10 text-center pb-4">
+                  <CardTitle className="text-4xl font-bold text-white mb-2">
+                    Ready for Battle?
+                  </CardTitle>
+                  <CardDescription className="text-slate-400 text-lg">
+                    Find an opponent and prove your chess mastery
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="relative z-10 flex flex-col items-center pb-8">
+                  {!searching ? (
+                    <Button
+                      size="lg"
+                      onClick={handleFindMatch}
+                      className="bg-gradient-to-r from-amber-600 to-amber-500 hover:from-amber-700 hover:to-amber-600 text-white font-bold px-12 py-6 text-xl shadow-lg shadow-amber-500/30"
+                    >
+                      <Swords className="mr-3 h-6 w-6" />
+                      Find Match
+                    </Button>
+                  ) : (
+                    <div className="text-center space-y-4">
+                      <div className="flex items-center justify-center gap-3 text-white">
+                        <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-amber-500" />
+                        <span className="text-lg">Searching for opponent...</span>
+                      </div>
+                      <Button
+                        variant="outline"
+                        onClick={handleCancelSearch}
+                        className="border-slate-700"
+                      >
+                        Cancel Search
+                      </Button>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </TabsContent>
+            <TabsContent value="room">
+                <Card className="border-slate-800 bg-slate-900/80 backdrop-blur-sm">
+                    <CardHeader>
+                        <CardTitle className="text-white">Game Rooms</CardTitle>
+                        <CardDescription className="text-slate-400">Create or join a game room to play with a friend.</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                        <RoomLobby onCreateRoom={handleCreateRoom} onJoinRoom={handleJoinRoom} />
+                    </CardContent>
+                </Card>
+            </TabsContent>
+            <TabsContent value="offline">
+                <Card className="border-slate-800 bg-slate-900/80 backdrop-blur-sm">
+                    <CardHeader>
+                        <CardTitle className="text-white">Offline Game</CardTitle>
+                        <CardDescription className="text-slate-400">Play against a friend on the same device.</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                        <OfflineBoard />
+                    </CardContent>
+                </Card>
+            </TabsContent>
+          </Tabs>
 
           <div className="grid md:grid-cols-3 gap-4">
             <Card className="border-slate-800 bg-slate-900/80 backdrop-blur-sm">

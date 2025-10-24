@@ -14,7 +14,6 @@ import { Crown, Flag, Download, FileText, Video, VideoOff } from 'lucide-react';
 import { toast } from 'sonner';
 import { io } from 'socket.io-client';
 import VideoChat from '@/components/VideoChat';
-import dynamic from 'next/dynamic';
 
 function GamePage({ params }) {
   const gameId = use(params).gameId;
@@ -30,7 +29,8 @@ function GamePage({ params }) {
   const [gameStatus, setGameStatus] = useState('active');
   const [currentTurn, setCurrentTurn] = useState('white');
   const [opponent, setOpponent] = useState(null);
-  const [showVideo, setShowVideo] = useState(true);
+  const [showVideo, setShowVideo] = useState(false);
+  const [liveKitToken, setLiveKitToken] = useState('');
   const [drawOffered, setDrawOffered] = useState(false);
 
   useEffect(() => {
@@ -74,39 +74,49 @@ function GamePage({ params }) {
       toast.error(data.message);
     });
 
-    // Fetch game state from server
-    fetchGameState();
+    const fetchGameAndToken = async () => {
+      try {
+        const res = await fetch(`/api/games/${gameId}`);
+        if (res.ok) {
+          const data = await res.json();
+          const game = data.game;
+          if (game.fen) {
+            chess.load(game.fen);
+            setFen(game.fen);
+          }
+          if (game.moves) {
+            setMoves(game.moves);
+          }
+          setGameStatus(game.status || 'active');
+          
+          if (game.whitePlayer && game.blackPlayer) {
+            const opp = playerColor === 'white' ? game.blackPlayer : game.whitePlayer;
+            setOpponent(opp);
+          }
+
+          // Only fetch token for room games, not random matches
+          if (!game.pgn.includes('[Event "Rated match"]')) { 
+            const tokenRes = await fetch('/api/livekit-token', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ room: gameId, username: user.username })
+            });
+            const tokenData = await tokenRes.json();
+            setLiveKitToken(tokenData.token);
+            setShowVideo(true);
+          }
+        }
+      } catch (error) {
+        console.error('Failed to fetch game state or token:', error);
+      }
+    };
+
+    fetchGameAndToken();
 
     return () => {
       newSocket.disconnect();
     };
   }, [gameId, user, router]);
-
-  const fetchGameState = async () => {
-    try {
-      const res = await fetch(`/api/games/${gameId}`);
-      if (res.ok) {
-        const data = await res.json();
-        const game = data.game;
-        if (game.fen) {
-          chess.load(game.fen);
-          setFen(game.fen);
-        }
-        if (game.moves) {
-          setMoves(game.moves);
-        }
-        setGameStatus(game.status || 'active');
-        
-        // Set opponent
-        if (game.whitePlayer && game.blackPlayer) {
-          const opp = playerColor === 'white' ? game.blackPlayer : game.whitePlayer;
-          setOpponent(opp);
-        }
-      }
-    } catch (error) {
-      console.error('Failed to fetch game state:', error);
-    }
-  };
 
   const onDrop = (sourceSquare, targetSquare) => {
     if (gameStatus !== 'active') {
@@ -131,7 +141,6 @@ function GamePage({ params }) {
       setFen(chess.fen());
       setMoves(chess.history({ verbose: true }));
 
-      // Send move to server
       if (socket) {
         socket.emit('make-move', {
           gameId,
@@ -297,32 +306,33 @@ function GamePage({ params }) {
             </Card>
 
             {/* Video Chat */}
-            <Card className="border-slate-800 bg-slate-900/80 backdrop-blur-sm">
-              <CardHeader>
-                <div className="flex items-center justify-between">
-                  <CardTitle className="text-white text-sm">Video Chat</CardTitle>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setShowVideo(!showVideo)}
-                  >
-                    {showVideo ? <Video className="h-4 w-4" /> : <VideoOff className="h-4 w-4" />}
-                  </Button>
-                </div>
-              </CardHeader>
-              <CardContent>
-                {showVideo && (
-                  <div className="h-64 rounded-lg overflow-hidden">
-                    <VideoChat roomName={gameId} playerName={user.username} />
+            {liveKitToken && (
+              <Card className="border-slate-800 bg-slate-900/80 backdrop-blur-sm">
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-white text-sm">Video Chat</CardTitle>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setShowVideo(!showVideo)}
+                    >
+                      {showVideo ? <Video className="h-4 w-4" /> : <VideoOff className="h-4 w-4" />}
+                    </Button>
                   </div>
-                )}
-                {!showVideo && (
-                  <div className="h-64 flex items-center justify-center bg-slate-800 rounded-lg">
-                    <span className="text-slate-400">Video chat hidden</span>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
+                </CardHeader>
+                <CardContent>
+                  {showVideo ? (
+                    <div className="h-64 rounded-lg overflow-hidden">
+                      <VideoChat token={liveKitToken} roomName={gameId} />
+                    </div>
+                  ) : (
+                    <div className="h-64 flex items-center justify-center bg-slate-800 rounded-lg">
+                      <span className="text-slate-400">Video chat hidden</span>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            )}
 
             {/* Move History */}
             <Card className="border-slate-800 bg-slate-900/80 backdrop-blur-sm">
